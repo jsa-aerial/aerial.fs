@@ -376,6 +376,50 @@ if it is not or if the file cannot be deleted."
     (map #(join root %) (filter #(re-find regex %) (listdir root)))))
 
 
+;; (ns-unmap *ns* 'assert-files?)
+(defmulti
+  ^{:arglists
+    '([coll]
+      [regex]
+      [file-glob])}
+  assert-files?
+  "Assert that the files (including directories) designated by
+   DESIGNATOR exist.  If not, collect all those that do not and raise
+   an ex-info exeception :type :no-such-files :files <set of names>.
+
+   DESIGNATOR can be a collection, regex or string.  If a collection,
+   each element is taken as a full path of a file; if regex, uses
+   re-directory-files to obtain a collection of paths; if string,
+   treat as file glob and use fs/glob to obtain collection of paths.
+   Check all elements of resulting collection with fs/exists?"
+  (fn[designator]
+    (if (coll? designator)
+      :coll
+      (type designator))))
+
+(defmethod assert-files? :coll
+  [coll]
+  (let [bad (filter #(or (nil? %) (not (exists? %))) coll)]
+    (if (seq bad)
+      (throw (ex-info "No such files" {:type :no-such-files :files bad}))
+      :good)))
+
+(defmethod assert-files? String
+  [gspec]
+  (let [files (glob gspec)]
+    (if (seq files)
+      (assert-files? (glob gspec))
+      (throw (ex-info "No such files" {:type :no-such-files :files gspec})))))
+
+(defmethod assert-files? java.util.regex.Pattern
+  [re]
+  (let [stg (.pattern re)
+        dir (dirname stg)
+        re (re-pattern (basename stg))
+        files (re-directory-files dir re)]
+    (if (seq files)
+      (assert-files? files)
+      (throw (ex-info "No such files" {:type :no-such-files :files re})))))
 
 
 ;; (ns-unmap *ns* 'move)
