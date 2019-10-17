@@ -1,7 +1,7 @@
 (ns aerial.fs
   ^{:doc "File system utilities in Clojure"
     :author "Miki Tebeka <miki.tebeka@gmail.com>, Jon Anthony"}
-  (:refer-clojure :exclude [empty?])
+  (:refer-clojure :exclude [empty? pop])
   (:require [clojure.java.io :as io]
             [clojure.string :as str])
   (:import java.io.File
@@ -36,32 +36,17 @@
    separator for the native system."
   [filespec-str]
   (let [^String s (str filespec-str)
-        s (.replace s  \\ File/separatorChar)
-        s (.replace s \/ File/separatorChar)]
-    (if (.startsWith s "~")
-      (str (System/getProperty "user.home")
-           separator
-           (subs s 1))
-      s)))
+        matchstg (if (= separator "/") "\\" "/")
+        s (replace-re matchstg separator s)]
+    (cond
+     (= s "~") (System/getProperty "user.home")
 
+     (.startsWith s "~")
+     (str (System/getProperty "user.home")
+          (if (= (.charAt s 1) File/separatorChar) "" separator)
+          (subs s 1))
 
-(declare exists? size)
-
-(defn empty? [path]
-  "Returns false if either (file path) does not exist OR if the
-   denoted file is empty (has size 0)"
-  (or (not (exists? path))
-      (= (size path) 0)))
-
-
-(defn pwd []
-  (System/getProperty "user.dir"))
-
-
-(defn homedir []
-  (System/getProperty "user.home"))
-
-
+     :else s)))
 
 
 (defn join
@@ -80,12 +65,18 @@
   (.renameTo (file old-path) (file new-path)))
 
 
-
+(declare size)
 
 (defn exists?
   "Return true if path exists."
   [path]
   (.exists (file path)))
+
+(defn empty? [path]
+  "Returns false if either (file path) does not exist OR if the
+   denoted file is empty (has size 0)"
+  (or (not (exists? path))
+      (= (size path) 0)))
 
 (defn directory?
   "Return true if path is a directory."
@@ -120,6 +111,48 @@
        (.getPath path (into-array [""])))))
 
 
+(defn pwd "Return current working directory path" []
+  (System/getProperty "user.dir"))
+
+(defn homedir "Return user home directory path" []
+  (System/getProperty "user.home"))
+
+(defn cd
+  "Change working directory to DIR and return previous working
+   directory. If DIR does not exist do nothing and return nil
+  "
+  [dir]
+  (let [dir (fullpath dir)]
+    (when (exists? dir)
+      (System/setProperty "user.dir" dir))))
+
+(def ^:dynamic dir-stack (atom ()))
+
+(defn dirstack "Return current directory stack" []
+  @dir-stack)
+
+(defn push
+  "Push current working directory on directory stack, cd to DIR, and
+   return previous (saved) working directory. If DIR does not exist do
+   nothing and return nil.
+  "
+  [dir]
+  (let [dir (fullpath dir)
+        cur (fullpath (pwd))]
+    (when (exists? dir)
+      (swap! dir-stack conj cur)
+      (cd dir))))
+
+(defn pop
+  "Pop current top saved directory from directory stack, make it the
+   current working directory, and return prior working directory. If
+   directory stack is empty, do nothing and return nil.
+  "
+  []
+  (when (seq @dir-stack)
+    (let [dir (first @dir-stack)]
+      (swap! dir-stack clojure.core/pop)
+      (cd dir))))
 
 
 ;;; From clj-file-utils
@@ -139,8 +172,9 @@
   (io/delete-file file true))
 
 (defn rm-r
-  "Remove a directory. The directory must be empty; will throw an exception
-if it is not or if the file cannot be deleted."
+  "Remove a directory. The directory must be empty; will throw an
+   exception if it is not or if the file cannot be deleted.
+  "
   [path &[silently]]
   (let [f (file path)]
     (if (.isDirectory f)
@@ -152,8 +186,6 @@ if it is not or if the file cannot be deleted."
   "Remove a directory, ignoring any errors."
   [path]
   (rm-r path true))
-
-
 
 
 (defn abspath
@@ -335,11 +367,6 @@ if it is not or if the file cannot be deleted."
      (.mkdir dir)
      path)))
 
-(defn cwd
-  "Return the current working directory."
-  []
-  (abspath "."))
-
 
 
 
@@ -376,6 +403,50 @@ if it is not or if the file cannot be deleted."
     (map #(join root %) (filter #(re-find regex %) (listdir root)))))
 
 
+;; (ns-unmap *ns* 'assert-files?)
+(defmulti
+  ^{:arglists
+    '([coll]
+      [regex]
+      [file-glob])}
+  assert-files?
+  "Assert that the files (including directories) designated by
+   DESIGNATOR exist.  If not, collect all those that do not and raise
+   an ex-info exeception :type :no-such-files :files <set of names>.
+
+   DESIGNATOR can be a collection, regex or string.  If a collection,
+   each element is taken as a full path of a file; if regex, uses
+   re-directory-files to obtain a collection of paths; if string,
+   treat as file glob and use fs/glob to obtain collection of paths.
+   Check all elements of resulting collection with fs/exists?"
+  (fn[designator]
+    (if (coll? designator)
+      :coll
+      (type designator))))
+
+(defmethod assert-files? :coll
+  [coll]
+  (let [bad (filter #(or (nil? %) (not (exists? %))) coll)]
+    (if (seq bad)
+      (throw (ex-info "No such files" {:type :no-such-files :files bad}))
+      :good)))
+
+(defmethod assert-files? String
+  [gspec]
+  (let [files (glob gspec)]
+    (if (seq files)
+      (assert-files? (glob gspec))
+      (throw (ex-info "No such files" {:type :no-such-files :files gspec})))))
+
+(defmethod assert-files? java.util.regex.Pattern
+  [re]
+  (let [stg (.pattern re)
+        dir (dirname stg)
+        re (re-pattern (basename stg))
+        files (re-directory-files dir re)]
+    (if (seq files)
+      (assert-files? files)
+      (throw (ex-info "No such files" {:type :no-such-files :files re})))))
 
 
 ;; (ns-unmap *ns* 'move)
